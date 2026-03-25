@@ -1,5 +1,5 @@
 use axum::{
-    Json, Router, extract::State, routing::{get, post}
+    Json, Router, extract::State, routing::get
 };
 use serde::{Deserialize, Serialize};
 use anyhow::Result;
@@ -7,6 +7,9 @@ use chrono::{DateTime, Utc};
 mod config;
 use config::Config;
 use sqlx::{PgPool, postgres::PgPoolOptions};
+mod errors;
+use errors::AppError;
+
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -67,7 +70,7 @@ async fn check_health() -> Json<Health> {
     })
 }
 
-async fn create_affiliate(State(pool): State<PgPool>, Json(body): Json<CreateAffiliate>,) -> Json<Affiliate> {
+async fn create_affiliate(State(pool): State<PgPool>, Json(body): Json<CreateAffiliate>,) -> Result<Json<Affiliate>, AppError> {
     tracing::info!("create hit");
     let create = sqlx::query_as!(
         Affiliate,
@@ -79,21 +82,19 @@ async fn create_affiliate(State(pool): State<PgPool>, Json(body): Json<CreateAff
         body.code,
     )
     .fetch_one(&pool)
-    .await
-    .unwrap();
+    .await?;
     
-    Json(create)
+    Ok(Json(create))
 }
 
-pub async fn get_all(State(pool): State<PgPool>,) -> Json<Vec<Affiliate>> {
+pub async fn get_all(State(pool): State<PgPool>,) -> Result<Json<Vec<Affiliate>>, AppError> {
     tracing::info!("get_all hit");
     let affiliates = sqlx::query_as!(
         Affiliate,
         "SELECT id, name, code, clicks, created_at FROM affiliates"
     )
     .fetch_all(&pool)
-    .await
-    .unwrap();
+    .await?;
 
-    Json(affiliates)
+    Ok(Json(affiliates))
 }
