@@ -3,6 +3,7 @@ use anyhow::{Context, Result};
 pub struct Config {
     pub port: u16,
     pub database_url: String,
+    pub api_key: String,
 }
 
 impl Config {
@@ -14,6 +15,8 @@ impl Config {
                 .context("PORT must be a valid number")?,
             database_url: std::env::var("DATABASE_URL")
                 .context("DATABASE_URL must be set")?,
+            api_key: std::env::var("API_KEY")
+                .context("API_KEY must be set")?,
         })
     }
 }

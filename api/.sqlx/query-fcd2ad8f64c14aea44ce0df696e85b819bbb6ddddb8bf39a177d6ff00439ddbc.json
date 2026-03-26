@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT clicked_at::date::text as date, COUNT(*) as clicks FROM click_logs WHERE affiliate_id = $1 GROUP BY clicked_at::date ORDER BY clicked_at::date DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "date",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "clicks",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "fcd2ad8f64c14aea44ce0df696e85b819bbb6ddddb8bf39a177d6ff00439ddbc"
+}
