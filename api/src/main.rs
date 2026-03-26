@@ -4,7 +4,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 mod config;
 use config::Config;
 use sqlx::{PgPool, postgres::PgPoolOptions, migrate::Migrator};
@@ -116,6 +116,56 @@ struct AffiliateStats {
     conversions_by_event: Vec<ConversionSummary>,
 }
 
+#[derive(Deserialize)]
+struct DashboardParams {
+    days: Option<i64>,
+    limit: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct DashboardSummary {
+    total_clicks: i64,
+    total_conversions: i64,
+    total_revenue: Decimal,
+    active_affiliates: i64,
+    period_days: i64,
+}
+
+#[derive(Serialize)]
+struct DailyClicksResponse {
+    period_days: i64,
+    daily: Vec<DailyClicks>,
+}
+
+#[derive(Serialize)]
+struct DailyConversion {
+    date: String,
+    conversions: i64,
+    revenue: Decimal,
+}
+
+#[derive(Serialize)]
+struct DailyConversionsResponse {
+    period_days: i64,
+    daily: Vec<DailyConversion>,
+}
+
+#[derive(Serialize)]
+struct TopAffiliate {
+    code: String,
+    name: String,
+    clicks: i64,
+    conversions: i64,
+    revenue: Decimal,
+    conversion_rate: f64,
+}
+
+#[derive(Serialize)]
+struct TopAffiliatesResponse {
+    period_days: i64,
+    affiliates: Vec<TopAffiliate>,
+}
+
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -154,6 +204,10 @@ async fn main() -> Result<()> {
         .route("/api/v1/affiliates/{id}", get(get_affiliate).put(update_affiliate).delete(delete_affiliate))
         .route("/api/v1/affiliates/{code}/stats", get(get_stats))
         .route("/api/v1/conversions", post(create_conversion))
+        .route("/api/v1/dashboard/summary", get(dashboard_summary))
+        .route("/api/v1/dashboard/clicks", get(dashboard_clicks))
+        .route("/api/v1/dashboard/conversions", get(dashboard_conversions))
+        .route("/api/v1/dashboard/top-affiliates", get(dashboard_top_affiliates))
         .layer(axum::middleware::from_fn_with_state(state.clone(), require_api_key));
 
     let cors = CorsLayer::new()
@@ -312,6 +366,103 @@ async fn get_stats(State(state): State<AppState>, Path(code): Path<String>) -> R
         daily_clicks,
         conversions_by_event,
     }))
+}
+
+async fn dashboard_summary(State(state): State<AppState>, Query(params): Query<DashboardParams>) -> Result<Json<DashboardSummary>, AppError> {
+    let days = params.days.unwrap_or(30).max(1);
+    let cutoff = Utc::now() - Duration::days(days);
+
+    let total_clicks = sqlx::query!("SELECT COUNT(*) as count FROM click_logs WHERE clicked_at >= $1", cutoff)
+        .fetch_one(&state.pool)
+        .await?;
+
+    let total_conversions = sqlx::query!("SELECT COUNT(*) as count FROM conversions WHERE created_at >= $1", cutoff)
+        .fetch_one(&state.pool)
+        .await?;
+
+    let total_revenue = sqlx::query!("SELECT COALESCE(SUM(amount), 0) as total FROM conversions WHERE created_at >= $1", cutoff)
+        .fetch_one(&state.pool)
+        .await?;
+
+    let active_affiliates = sqlx::query!("SELECT COUNT(DISTINCT affiliate_id) as count FROM click_logs WHERE clicked_at >= $1", cutoff)
+        .fetch_one(&state.pool)
+        .await?;
+
+    Ok(Json(DashboardSummary {
+        total_clicks: total_clicks.count.unwrap_or_default(),
+        total_conversions: total_conversions.count.unwrap_or_default(),
+        total_revenue: total_revenue.total.unwrap_or_default(),
+        active_affiliates: active_affiliates.count.unwrap_or_default(),
+        period_days: days,
+    }))
+}
+
+async fn dashboard_clicks(State(state): State<AppState>, Query(params): Query<DashboardParams>) -> Result<Json<DailyClicksResponse>, AppError> {
+    let days = params.days.unwrap_or(30).max(1);
+    let cutoff = Utc::now() - Duration::days(days);
+
+    let daily = sqlx::query!("SELECT clicked_at::date::text as date, COUNT(*) as clicks FROM click_logs WHERE clicked_at >= $1 GROUP BY clicked_at::date ORDER BY clicked_at::date ASC", cutoff)
+        .fetch_all(&state.pool)
+        .await?
+        .into_iter()
+        .map(|row| DailyClicks {
+            date: row.date.unwrap_or_default(),
+            clicks: row.clicks.unwrap_or_default(),
+        })
+        .collect();
+
+    Ok(Json(DailyClicksResponse { period_days: days, daily }))
+}
+
+async fn dashboard_conversions(State(state): State<AppState>, Query(params): Query<DashboardParams>) -> Result<Json<DailyConversionsResponse>, AppError> {
+    let days = params.days.unwrap_or(30).max(1);
+    let cutoff = Utc::now() - Duration::days(days);
+
+    let daily = sqlx::query!("SELECT created_at::date::text as date, COUNT(*) as conversions, COALESCE(SUM(amount), 0) as revenue FROM conversions WHERE created_at >= $1 GROUP BY created_at::date ORDER BY created_at::date ASC", cutoff)
+        .fetch_all(&state.pool)
+        .await?
+        .into_iter()
+        .map(|row| DailyConversion {
+            date: row.date.unwrap_or_default(),
+            conversions: row.conversions.unwrap_or_default(),
+            revenue: row.revenue.unwrap_or_default(),
+        })
+        .collect();
+
+    Ok(Json(DailyConversionsResponse { period_days: days, daily }))
+}
+
+async fn dashboard_top_affiliates(State(state): State<AppState>, Query(params): Query<DashboardParams>) -> Result<Json<TopAffiliatesResponse>, AppError> {
+    let days = params.days.unwrap_or(30).max(1);
+    let limit = params.limit.unwrap_or(10).clamp(1, 50);
+    let cutoff = Utc::now() - Duration::days(days);
+
+    let rows = sqlx::query!(
+        "SELECT a.code, a.name, COALESCE(cl.clicks, 0) as \"clicks!\", COALESCE(cv.conversions, 0) as \"conversions!\", COALESCE(cv.revenue, 0) as \"revenue!\"
+        FROM affiliates a
+        LEFT JOIN (SELECT affiliate_id, COUNT(*)::bigint as clicks FROM click_logs WHERE clicked_at >= $1 GROUP BY affiliate_id) cl ON cl.affiliate_id = a.id
+        LEFT JOIN (SELECT affiliate_id, COUNT(*)::bigint as conversions, COALESCE(SUM(amount), 0) as revenue FROM conversions WHERE created_at >= $1 GROUP BY affiliate_id) cv ON cv.affiliate_id = a.id
+        ORDER BY COALESCE(cl.clicks, 0) DESC
+        LIMIT $2",
+        cutoff,
+        limit
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    let affiliates = rows.into_iter().map(|row| {
+        let conversion_rate = if row.clicks > 0 { (row.conversions as f64 / row.clicks as f64) * 100.0 } else { 0.0 };
+        TopAffiliate {
+            code: row.code,
+            name: row.name,
+            clicks: row.clicks,
+            conversions: row.conversions,
+            revenue: row.revenue,
+            conversion_rate: (conversion_rate * 100.0).round() / 100.0,
+        }
+    }).collect();
+
+    Ok(Json(TopAffiliatesResponse { period_days: days, affiliates }))
 }
 
 async fn create_conversion(State(state): State<AppState>, Json(body): Json<CreateConversion>) -> Result<Json<Conversion>, AppError> {
