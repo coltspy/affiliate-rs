@@ -1,14 +1,16 @@
 <script lang="ts">
-	import * as Card from "$lib/components/ui/card";
+	import type { Component } from "svelte";
 
-	let { title, value }: { title: string; value: string | number } = $props();
+	let { title, value, icon }: { title: string; value: string | number; icon?: Component } = $props();
 </script>
 
-<Card.Root>
-	<Card.Header>
-		<Card.Title class="text-sm font-medium text-muted-foreground">{title}</Card.Title>
-	</Card.Header>
-	<Card.Content>
-		<p class="text-2xl font-bold">{value}</p>
-	</Card.Content>
-</Card.Root>
+<div class="rounded-lg border-2 border-border bg-sidebar p-5">
+	<div class="flex items-center justify-between">
+		<p class="text-sm font-bold text-foreground">{title}</p>
+		{#if icon}
+			{@const Icon = icon}
+			<Icon class="h-5 w-5 text-muted-foreground" />
+		{/if}
+	</div>
+	<p class="mt-2 text-3xl font-extrabold text-foreground">{value}</p>
+</div>
